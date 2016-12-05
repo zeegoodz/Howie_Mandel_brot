@@ -30,7 +30,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
-#include "timer.h"
 #include <cuda.h>
 
 #define   RADIUS_SQ  4.0     /* 2^2                              */
@@ -56,9 +55,11 @@ static void HandleError( cudaError_t err, const char *file, int line) {
 
 void writePGM (char * filename, int * data, int width, int height);
 
-__global__ void mandelbrotRUN(double MAX_ITER, char* outfilename, int* output){
+__global__ void mandelbrotRUN(double MAX_ITER, char* outfilename, int* d_output){
 
-  int i,j;                            /* index variables */
+   int i = blockIdx.x*blockDim.x + threadIdx.x;
+   int j = blockIdx.y*blockDim.y + threadIdx.y;
+   int N = blockDim.x*gridDim.x;			/* index variables */
 
    int  counter;                       /* measures the "speed" at which   */
                                        /* a particular point diverges.    */
@@ -80,8 +81,8 @@ __global__ void mandelbrotRUN(double MAX_ITER, char* outfilename, int* output){
    real_range = (real_max - real_min) / (X_RANGE - 1);
    imag_range = (imag_max - imag_min) / (Y_RANGE - 1);
 
-   for(i=0; i<Y_RANGE; ++i) {
-      for(j=0; j<X_RANGE; ++j) {
+  // for(i=0; i<Y_RANGE; ++i) {
+    //  for(j=0; j<X_RANGE; ++j) {
 
         c_real = real_min + i * real_range;
         c_imag = imag_min + j * imag_range;
@@ -93,7 +94,8 @@ __global__ void mandelbrotRUN(double MAX_ITER, char* outfilename, int* output){
            z_current_real = z_real;
 
            z_real = (z_real * z_real) - (z_imag * z_imag) + c_real;
-           z_imag = (2.0 * z_current_real * z_imag) + c_imag;
+          //y
+		   z_imag = (2.0 * z_current_real * z_imag) + c_imag;
 
            z_magnitude = (z_real * z_real) + (z_imag * z_imag);
 
@@ -102,9 +104,10 @@ __global__ void mandelbrotRUN(double MAX_ITER, char* outfilename, int* output){
            }
         }  //end for
 
-        output[i*X_RANGE+j] = (int)floor(((double)(255 * counter)) / (double)MAX_ITER);
-      } // end for
-   } // end for
+		d_output[i+j*N] = (int)floor(((double)(255 * counter)) / (double) MAX_ITER);
+       // output[i*X_RANGE+j] = (int)floor(((double)(255 * counter)) / (double)MAX_ITER);
+     // } // end for
+  // } // end for
 
 }
 
@@ -112,24 +115,30 @@ int main(int argc, char ** argv) {
 
 
 	// parse command line arguments
-	if ( argc < 4 ) {
-		printf("Usage : %s SIZE PERTHREAD BLOCKSIZE ITERATIONS\n", argv[0]);
+	if ( argc < 3 ) {
+		printf("Usage : %s PERTHREAD BLOCKSIZE ITERATIONS\n", argv[0]);
 		exit(0);
 	}
 
-	int size = atoi(argv[1]);
-	int perThread = atoi(argv[2]);
-	int blockSize = atoi(argv[3]);
+//	int size = atoi(argv[1]);
+	int perThread = atoi(argv[1]);
+	int blockSize = atoi(argv[2]);
 
-   double MAX_ITER = atoi(argv[4]);    /* first command line argument... */
+   double MAX_ITER = atoi(argv[3]);    /* first command line argument... */
 
+    char *outfilename = "Mandelbrot.pgm";  /* the sequential output filename */
 	/* allocate memory to store output values for pixels */
     int * output = (int*) malloc(sizeof(int) * X_RANGE * Y_RANGE);
 	int *d_output;
 
 	HANDLE_ERROR(cudaMalloc((void**)&d_output,sizeof(int)*X_RANGE*Y_RANGE));
-    char * outfilename = "Mandelbrot.pgm";  /* the sequential output filename */
-    double time; 	/*timer*/
+
+	dim3 blockDim(blockSize, blockSize);
+	dim3 gridDim(X_RANGE/blockDim.x, Y_RANGE/blockDim.y);
+
+
+
+    float time; 	/*timer*/
 	cudaEvent_t start, stop;
 	HANDLE_ERROR(cudaEventCreate(&start));
 	HANDLE_ERROR(cudaEventCreate(&stop));
@@ -138,19 +147,20 @@ int main(int argc, char ** argv) {
 	//need more in here I think
 	//E.G vecAdd4.cu Line 76-85
 
-	int calcPerBlock = blockSize*perThread;
-	int numBlocks = size/calcPerBlock;
-	if(size%calcPerBlock); numBlocks++;
+//	int calcPerBlock = blockSize*perThread;
+//	int numBlocks = size/calcPerBlock;
+//	if(size%calcPerBlock); numBlocks++;
 
-   mandelbrotRUN<<<numBlocks, blockSize>>>(MAX_ITER, outfilename, d_output );
+
+   mandelbrotRUN<<<gridDim, blockDim, 0>>>(MAX_ITER, outfilename, d_output );
 
    HANDLE_ERROR(cudaMemcpy(output, d_output, sizeof(int)*X_RANGE*Y_RANGE, cudaMemcpyDeviceToHost));
 
    HANDLE_ERROR(cudaEventRecord(stop, 0));
    HANDLE_ERROR(cudaEventSynchronize(stop));
-  // HANDLE_ERROR(cudaEventElaspedTime(&time, start, stop));
+   HANDLE_ERROR(cudaEventElapsedTime(&time, start, stop));
 
-
+	printf("Elapsed time: %lf sec\n", time/1000.);
    /* write the pgm file to the file specified */
    /* in the first command line argument.      */
    writePGM(outfilename, output, X_RANGE, Y_RANGE);
